@@ -18,18 +18,14 @@
    parameters, matching the accompanying Fortran implementation.
 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ */
 
-#include "tools/NeighborList.h"
-#include "tools/Communicator.h"
 #include "Colvar.h"
-
-#include "tools/Matrix.h"
 #include "core/ActionRegister.h"
+#include "tools/NeighborList.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <memory>
-#include <string>
 #include <vector>
 
 namespace PLMD {
@@ -44,9 +40,6 @@ private:
 
   std::unique_ptr<NeighborList> nl;
 
-  std::vector<PLMD::AtomNumber> list_a;
-  std::vector<PLMD::AtomNumber> list_b;
-
   double lambdaDet;
   double lambdaHigh;
   double lambdaLow;
@@ -60,14 +53,15 @@ private:
 
   int nrx;
   int numAtomsa;
-  int numAtomsb;
   int numAtomso;
 
-  static void smoothGate(const double theta,
-                         const double thetaOn,
-                         const double thetaOff,
-                         double& s,
-                         double& sprime);
+  static void smoothGate(
+      double theta,
+      double gateThetaOn,
+      double gateThetaOff,
+      double& gateValue,
+      double& gateDerivative
+  );
 
 public:
   explicit VoronoiD1Adaptive(const ActionOptions&);
@@ -86,99 +80,143 @@ void VoronoiD1Adaptive::registerKeywords(Keywords& keys) {
   Colvar::registerKeywords(keys);
 
   keys.addFlag(
-      "SERIAL", false,
+      "SERIAL",
+      false,
       "Perform neighbor-list construction in serial; mainly useful for "
-      "debugging.");
+      "debugging."
+  );
 
   keys.addFlag(
-      "NLIST", false,
-      "Use a neighbor list for GROUPA-GROUPB pairs.");
+      "NLIST",
+      false,
+      "Use a neighbor list for GROUPA-GROUPB pairs."
+  );
 
   keys.add(
-      "optional", "NL_CUTOFF",
+      "optional",
+      "NL_CUTOFF",
       "Cutoff for the neighbor list. The cutoff must be sufficiently large "
       "to include every GROUPA site that contributes appreciably to the "
-      "Voronoi normalization.");
+      "Voronoi normalization."
+  );
 
   keys.add(
-      "optional", "NL_STRIDE",
-      "Frequency at which the neighbor list is updated.");
+      "optional",
+      "NL_STRIDE",
+      "Frequency at which the neighbor list is updated."
+  );
 
   keys.add(
-      "atoms", "GROUPA",
+      "atoms",
+      "GROUPA",
       "Voronoi sites. The first size(GROUPA)-NRX atoms are the water oxygen "
-      "sites entering the final pair-distance CV.");
+      "sites entering the final pair-distance CV."
+  );
 
   keys.add(
-      "atoms", "GROUPB",
-      "Atoms assigned among the Voronoi sites, normally the hydrogen atoms.");
+      "atoms",
+      "GROUPB",
+      "Atoms assigned among the Voronoi sites, normally the hydrogen atoms."
+  );
 
   keys.add(
-      "compulsory", "LAMBDA_DET", "1.0",
+      "compulsory",
+      "LAMBDA_DET",
+      "1.0",
       "Positive inverse-length parameter used for the detector weights "
-      "u_ih = exp(-LAMBDA_DET*r_ih)/sum_j exp(-LAMBDA_DET*r_jh).");
+      "u_ih = exp(-LAMBDA_DET*r_ih)/sum_j exp(-LAMBDA_DET*r_jh)."
+  );
 
   keys.add(
-      "compulsory", "LAMBDA_HIGH", "1.0",
-      "Positive high-lambda endpoint of the adaptive interpolation.");
+      "compulsory",
+      "LAMBDA_HIGH",
+      "1.0",
+      "Positive high-lambda endpoint of the adaptive interpolation."
+  );
 
   keys.add(
-      "compulsory", "LAMBDA_LOW", "1.0",
-      "Positive low-lambda endpoint of the adaptive interpolation.");
+      "compulsory",
+      "LAMBDA_LOW",
+      "1.0",
+      "Positive low-lambda endpoint of the adaptive interpolation."
+  );
 
   keys.add(
-      "compulsory", "THETA_ON", "0.0",
-      "Value of Theta_h below which the adaptive gate is zero.");
+      "compulsory",
+      "THETA_ON",
+      "0.0",
+      "Value of Theta_h below which the adaptive gate is zero."
+  );
 
   keys.add(
-      "compulsory", "THETA_OFF", "1.0",
-      "Value of Theta_h above which the adaptive gate is one.");
+      "compulsory",
+      "THETA_OFF",
+      "1.0",
+      "Value of Theta_h above which the adaptive gate is one."
+  );
 
   keys.add(
-      "compulsory", "D_0", "0.0",
-      "Charge shift applied to ordinary GROUPA sites.");
+      "compulsory",
+      "D_0",
+      "0.0",
+      "Charge shift applied to ordinary GROUPA sites."
+  );
 
   keys.add(
-      "compulsory", "D_1", "0.0",
-      "Charge shift applied to the first reactive GROUPA site.");
+      "compulsory",
+      "D_1",
+      "0.0",
+      "Charge shift applied to the first reactive GROUPA site."
+  );
 
   keys.add(
-      "compulsory", "D_2", "0.0",
-      "Charge shift applied to the second reactive GROUPA site.");
+      "compulsory",
+      "D_2",
+      "0.0",
+      "Charge shift applied to the second reactive GROUPA site."
+  );
 
   keys.add(
-      "compulsory", "D_3", "0.0",
-      "Charge shift applied to the third reactive GROUPA site.");
+      "compulsory",
+      "D_3",
+      "0.0",
+      "Charge shift applied to the third reactive GROUPA site."
+  );
 
   keys.add(
-      "compulsory", "NRX", "0",
+      "compulsory",
+      "NRX",
+      "0",
       "Number of reactive/non-water sites at the end of GROUPA. Only the "
-      "first size(GROUPA)-NRX sites enter the pair-distance sum.");
-   
-  keys.setValueDescription("the adaptive Voronoi collective variable (charge-weighted pair-distance sum)");
+      "first size(GROUPA)-NRX sites enter the pair-distance sum."
+  );
+
+  keys.setValueDescription(
+      "the adaptive Voronoi collective variable "
+      "(charge-weighted pair-distance sum)"
+  );
 }
 
 
-VoronoiD1Adaptive::VoronoiD1Adaptive(const ActionOptions& ao)
-    : PLUMED_COLVAR_INIT(ao),
-      pbc(true),
-      serial(false),
-      invalidateList(true),
-      firsttime(true),
-      lambdaDet(1.0),
-      lambdaHigh(1.0),
-      lambdaLow(1.0),
-      thetaOn(0.0),
-      thetaOff(1.0),
-      d0(0.0),
-      d1(0.0),
-      d2(0.0),
-      d3(0.0),
-      nrx(0),
-      numAtomsa(0),
-      numAtomsb(0),
-      numAtomso(0) {
-
+VoronoiD1Adaptive::VoronoiD1Adaptive(const ActionOptions& ao):
+  PLUMED_COLVAR_INIT(ao),
+  pbc(true),
+  serial(false),
+  invalidateList(true),
+  firsttime(true),
+  lambdaDet(1.0),
+  lambdaHigh(1.0),
+  lambdaLow(1.0),
+  thetaOn(0.0),
+  thetaOff(1.0),
+  d0(0.0),
+  d1(0.0),
+  d2(0.0),
+  d3(0.0),
+  nrx(0),
+  numAtomsa(0),
+  numAtomso(0)
+{
   parseFlag("SERIAL", serial);
 
   std::vector<AtomNumber> gaLista;
@@ -187,17 +225,14 @@ VoronoiD1Adaptive::VoronoiD1Adaptive(const ActionOptions& ao)
   parseAtomList("GROUPA", gaLista);
   parseAtomList("GROUPB", gbLista);
 
-  list_a = gaLista;
-  list_b = gbLista;
+  numAtomsa = static_cast<int>(gaLista.size());
+  const int numAtomsb = static_cast<int>(gbLista.size());
 
-  numAtomsa = static_cast<int>(list_a.size());
-  numAtomsb = static_cast<int>(list_b.size());
-
-  if (numAtomsa <= 0) {
+  if(numAtomsa <= 0) {
     error("GROUPA must contain at least one atom");
   }
 
-  if (numAtomsb <= 0) {
+  if(numAtomsb <= 0) {
     error("GROUPB must contain at least one atom");
   }
 
@@ -217,25 +252,25 @@ VoronoiD1Adaptive::VoronoiD1Adaptive(const ActionOptions& ao)
   parse("D_3", d3);
   parse("NRX", nrx);
 
-  if (lambdaDet <= 0.0) {
+  if(lambdaDet <= 0.0) {
     error("LAMBDA_DET must be positive");
   }
 
-  if (lambdaHigh <= 0.0) {
+  if(lambdaHigh <= 0.0) {
     error("LAMBDA_HIGH must be positive");
   }
 
-  if (lambdaLow <= 0.0) {
+  if(lambdaLow <= 0.0) {
     error("LAMBDA_LOW must be positive");
   }
 
-  if (nrx < 0 || nrx > numAtomsa) {
+  if(nrx < 0 || nrx > numAtomsa) {
     error("NRX must satisfy 0 <= NRX <= size(GROUPA)");
   }
 
   numAtomso = numAtomsa - nrx;
 
-  if (numAtomso <= 0) {
+  if(numAtomso <= 0) {
     error("GROUPA must contain at least one non-reactive/water site");
   }
 
@@ -245,15 +280,15 @@ VoronoiD1Adaptive::VoronoiD1Adaptive(const ActionOptions& ao)
 
   parseFlag("NLIST", doneigh);
 
-  if (doneigh) {
+  if(doneigh) {
     parse("NL_CUTOFF", nlCut);
     parse("NL_STRIDE", nlStride);
 
-    if (nlCut <= 0.0) {
+    if(nlCut <= 0.0) {
       error("NL_CUTOFF must be explicitly specified and positive");
     }
 
-    if (nlStride <= 0) {
+    if(nlStride <= 0) {
       error("NL_STRIDE must be explicitly specified and positive");
     }
   }
@@ -266,25 +301,53 @@ VoronoiD1Adaptive::VoronoiD1Adaptive(const ActionOptions& ao)
    * Voronoi normalization require each GROUPB atom to be compared with
    * all relevant GROUPA sites.
    */
-  if (doneigh) {
+  if(doneigh) {
     nl = Tools::make_unique<NeighborList>(
-        gaLista, gbLista, serial, false, pbc, getPbc(), comm,
-        nlCut, nlStride);
+        gaLista,
+        gbLista,
+        serial,
+        false,
+        pbc,
+        getPbc(),
+        comm,
+        nlCut,
+        nlStride
+    );
   } else {
     nl = Tools::make_unique<NeighborList>(
-        gaLista, gbLista, serial, false, pbc, getPbc(), comm);
+        gaLista,
+        gbLista,
+        serial,
+        false,
+        pbc,
+        getPbc(),
+        comm
+    );
   }
 
   requestAtoms(nl->getFullAtomList());
 
   log.printf("  adaptive Voronoi CV\n");
-  log.printf("  GROUPA contains %u atoms\n",
-             static_cast<unsigned>(gaLista.size()));
-  log.printf("  GROUPB contains %u atoms\n",
-             static_cast<unsigned>(gbLista.size()));
-  log.printf("  number of water/non-reactive GROUPA sites: %d\n",
-             numAtomso);
-  log.printf("  number of reactive GROUPA sites: %d\n", nrx);
+
+  log.printf(
+      "  GROUPA contains %u atoms\n",
+      static_cast<unsigned>(gaLista.size())
+  );
+
+  log.printf(
+      "  GROUPB contains %u atoms\n",
+      static_cast<unsigned>(gbLista.size())
+  );
+
+  log.printf(
+      "  number of water/non-reactive GROUPA sites: %d\n",
+      numAtomso
+  );
+
+  log.printf(
+      "  number of reactive GROUPA sites: %d\n",
+      nrx
+  );
 
   log.printf("  LAMBDA_DET  = %f\n", lambdaDet);
   log.printf("  LAMBDA_HIGH = %f\n", lambdaHigh);
@@ -294,17 +357,27 @@ VoronoiD1Adaptive::VoronoiD1Adaptive(const ActionOptions& ao)
 
   log.printf("  lambda convention: exp(-lambda*r)\n");
 
-  if (pbc) {
+  if(pbc) {
     log.printf("  using periodic boundary conditions\n");
   } else {
     log.printf("  without periodic boundary conditions\n");
   }
 
-  if (doneigh) {
-    log.printf("  using a neighbor list with cutoff %f\n", nlCut);
-    log.printf("  neighbor-list update stride: %d\n", nlStride);
-    log.printf("  WARNING: the cutoff must include all GROUPA sites with "
-               "non-negligible Voronoi weight\n");
+  if(doneigh) {
+    log.printf(
+        "  using a neighbor list with cutoff %f\n",
+        nlCut
+    );
+
+    log.printf(
+        "  neighbor-list update stride: %d\n",
+        nlStride
+    );
+
+    log.printf(
+        "  WARNING: the cutoff must include all GROUPA sites with "
+        "non-negligible Voronoi weight\n"
+    );
   }
 
   checkRead();
@@ -315,9 +388,10 @@ VoronoiD1Adaptive::~VoronoiD1Adaptive() = default;
 
 
 void VoronoiD1Adaptive::prepare() {
-  if (nl->getStride() > 0) {
-    if (firsttime || (getStep() % nl->getStride() == 0)) {
+  if(nl->getStride() > 0) {
+    if(firsttime || getStep() % nl->getStride() == 0) {
       requestAtoms(nl->getFullAtomList());
+
       invalidateList = true;
       firsttime = false;
     } else {
@@ -326,51 +400,60 @@ void VoronoiD1Adaptive::prepare() {
        * consistent with the order used for charge and A arrays.
        */
       requestAtoms(nl->getFullAtomList());
+
       invalidateList = false;
 
-      if (getExchangeStep()) {
-        error("Neighbor lists must be updated on exchange steps; choose an "
-              "NL_STRIDE that divides the exchange stride");
+      if(getExchangeStep()) {
+        error(
+            "Neighbor lists must be updated on exchange steps; choose an "
+            "NL_STRIDE that divides the exchange stride"
+        );
       }
     }
 
-    if (getExchangeStep()) {
+    if(getExchangeStep()) {
       firsttime = true;
     }
   }
 }
 
 
-void VoronoiD1Adaptive::smoothGate(const double theta,
-                                   const double thetaOn,
-                                   const double thetaOff,
-                                   double& s,
-                                   double& sprime) {
-  const double pi = 3.141592653589793238462643383279502884;
+void VoronoiD1Adaptive::smoothGate(
+    const double theta,
+    const double gateThetaOn,
+    const double gateThetaOff,
+    double& gateValue,
+    double& gateDerivative
+) {
+  const double pi =
+      3.141592653589793238462643383279502884;
 
-  if (thetaOff <= thetaOn) {
+  if(gateThetaOff <= gateThetaOn) {
     /*
      * Degenerate gate: hard step. Its derivative is set to zero.
      */
-    s = (theta >= thetaOn) ? 1.0 : 0.0;
-    sprime = 0.0;
+    gateValue = (theta >= gateThetaOn) ? 1.0 : 0.0;
+    gateDerivative = 0.0;
     return;
   }
 
-  if (theta <= thetaOn) {
-    s = 0.0;
-    sprime = 0.0;
-  } else if (theta >= thetaOff) {
-    s = 1.0;
-    sprime = 0.0;
+  if(theta <= gateThetaOn) {
+    gateValue = 0.0;
+    gateDerivative = 0.0;
+  } else if(theta >= gateThetaOff) {
+    gateValue = 1.0;
+    gateDerivative = 0.0;
   } else {
-    const double x = (theta - thetaOn) / (thetaOff - thetaOn);
+    const double x =
+        (theta - gateThetaOn) /
+        (gateThetaOff - gateThetaOn);
 
-    s = 0.5 * (1.0 - std::cos(pi * x));
+    gateValue =
+        0.5 * (1.0 - std::cos(pi * x));
 
-    sprime =
+    gateDerivative =
         pi /
-        (2.0 * (thetaOff - thetaOn)) *
+        (2.0 * (gateThetaOff - gateThetaOn)) *
         std::sin(pi * x);
   }
 }
@@ -378,9 +461,10 @@ void VoronoiD1Adaptive::smoothGate(const double theta,
 
 void VoronoiD1Adaptive::calculate() {
   const double tinyR = 1.0e-14;
-  const double infinity = std::numeric_limits<double>::infinity();
+  const double infinity =
+      std::numeric_limits<double>::infinity();
 
-  if (nl->getStride() > 0 && invalidateList) {
+  if(nl->getStride() > 0 && invalidateList) {
     nl->update(getPositions());
   }
 
@@ -388,7 +472,7 @@ void VoronoiD1Adaptive::calculate() {
   const unsigned nn = nl->size();
 
   /*
-   * The current implementation follows the same local-index convention as
+   * The implementation follows the same local-index convention as
    * VORONOID1:
    *
    *   local indices 0 ... numAtomsa-1 correspond to GROUPA.
@@ -396,15 +480,15 @@ void VoronoiD1Adaptive::calculate() {
    * NeighborList pair indices are local requested-atom indices.
    */
 
-  std::vector<unsigned> pairO(nn);
-  std::vector<unsigned> pairH(nn);
+  std::vector<unsigned> pairO(nn, 0u);
+  std::vector<unsigned> pairH(nn, 0u);
 
   std::vector<double> pairR(nn, 0.0);
   std::vector<Vector> pairRvec(nn);
   std::vector<Vector> pairEOH(nn);
 
   /*
-   * Detector/adaptive pair weights.
+   * Detector and adaptive pair weights.
    */
   std::vector<double> u(nn, 0.0);
   std::vector<double> w(nn, 0.0);
@@ -431,23 +515,34 @@ void VoronoiD1Adaptive::calculate() {
   /*
    * Per-GROUPA quantities.
    */
-  std::vector<double> charge(numAtomsa, 0.0);
-  std::vector<double> A(numAtomsa, 0.0);
+  std::vector<double> charge(
+      static_cast<std::size_t>(numAtomsa),
+      0.0
+  );
+
+  std::vector<double> A(
+      static_cast<std::size_t>(numAtomsa),
+      0.0
+  );
 
   /*
    * Atomic and box derivatives.
    */
   std::vector<Vector> deriv(nAtoms);
+
   Vector zero;
   zero.zero();
+
   std::fill(deriv.begin(), deriv.end(), zero);
 
   Tensor virial;
+  virial.zero();
 
   /*
    * Geometric interpolation:
    *
-   *   lambda_eff = lambdaHigh * exp[-s*log(lambdaHigh/lambdaLow)]
+   *   lambda_eff =
+   *       lambdaHigh * exp[-s*log(lambdaHigh/lambdaLow)]
    *
    * and
    *
@@ -455,29 +550,42 @@ void VoronoiD1Adaptive::calculate() {
    *         = log(lambdaHigh/lambdaLow)
    *           * lambda_eff * ds/dTheta.
    */
-  const double logLambdaRatio = std::log(lambdaHigh / lambdaLow);
+  const double logLambdaRatio =
+      std::log(lambdaHigh / lambdaLow);
 
   //====================================================================
   // PASS 0: GROUPA-GROUPB distances and unit vectors
   //====================================================================
 
-  for (unsigned i = 0; i < nn; ++i) {
-    const unsigned ind0 = nl->getClosePair(i).first;
-    const unsigned ind1 = nl->getClosePair(i).second;
+  for(unsigned i = 0; i < nn; ++i) {
+    const unsigned ind0 =
+        nl->getClosePair(i).first;
 
-    if (ind0 >= static_cast<unsigned>(numAtomsa)) {
-      error("Internal GROUPA index is inconsistent with the requested-atom "
-            "ordering");
+    const unsigned ind1 =
+        nl->getClosePair(i).second;
+
+    if(ind0 >= static_cast<unsigned>(numAtomsa)) {
+      error(
+          "Internal GROUPA index is inconsistent with the "
+          "requested-atom ordering"
+      );
     }
 
     pairO[i] = ind0;
     pairH[i] = ind1;
 
     Vector rij;
-    if (pbc) {
-      rij = pbcDistance(getPosition(ind0), getPosition(ind1));
+
+    if(pbc) {
+      rij = pbcDistance(
+          getPosition(ind0),
+          getPosition(ind1)
+      );
     } else {
-      rij = delta(getPosition(ind0), getPosition(ind1));
+      rij = delta(
+          getPosition(ind0),
+          getPosition(ind1)
+      );
     }
 
     /*
@@ -485,7 +593,7 @@ void VoronoiD1Adaptive::calculate() {
      *
      *   rij = R_H - R_O
      *
-     * The Fortran e_oh convention is:
+     * The e_oh convention is:
      *
      *   e_oh = (R_O - R_H)/r = -rij/r.
      */
@@ -494,7 +602,7 @@ void VoronoiD1Adaptive::calculate() {
     pairRvec[i] = rij;
     pairR[i] = r;
 
-    if (r > tinyR) {
+    if(r > tinyR) {
       pairEOH[i] = (-1.0 / r) * rij;
     } else {
       pairEOH[i] = zero;
@@ -508,25 +616,28 @@ void VoronoiD1Adaptive::calculate() {
   //
   // Stable evaluation:
   //
-  //   exp[-lambda_det*(r_i-r_min)]
+  //   exp[-lambdaDet*(r_i-r_min)]
   //
-  // The common exp(-lambda_det*r_min) cancels in the normalization.
+  // The common exp(-lambdaDet*r_min) cancels in the normalization.
   //====================================================================
 
-  for (unsigned i = 0; i < nn; ++i) {
+  for(unsigned i = 0; i < nn; ++i) {
     const unsigned h = pairH[i];
 
-    const double shiftedR = pairR[i] - minR[h];
-    const double value = std::exp(-lambdaDet * shiftedR);
+    const double shiftedR =
+        pairR[i] - minR[h];
+
+    const double value =
+        std::exp(-lambdaDet * shiftedR);
 
     u[i] = value;
     detectorNorm[h] += value;
   }
 
-  for (unsigned i = 0; i < nn; ++i) {
+  for(unsigned i = 0; i < nn; ++i) {
     const unsigned h = pairH[i];
 
-    if (detectorNorm[h] <= 0.0) {
+    if(detectorNorm[h] <= 0.0) {
       error("Zero detector normalization encountered");
     }
 
@@ -535,36 +646,46 @@ void VoronoiD1Adaptive::calculate() {
   }
 
   //====================================================================
-  // PASS 2: Theta_h, gate, lambda_eff and kappa
+  // PASS 2: Theta_h, gate, lambda_eff, and kappa
   //====================================================================
 
-  for (unsigned i = 0; i < nn; ++i) {
+  for(unsigned i = 0; i < nn; ++i) {
     const unsigned h = pairH[i];
 
     /*
      * Process each GROUPB atom only once. detectorNorm[h] is set to a
      * negative marker after processing.
      */
-    if (detectorNorm[h] < 0.0) {
+    if(detectorNorm[h] < 0.0) {
       continue;
     }
 
     theta[h] = 1.0 - purity[h];
 
-    smoothGate(theta[h], thetaOn, thetaOff,
-               gate[h], gatePrime[h]);
+    smoothGate(
+        theta[h],
+        thetaOn,
+        thetaOff,
+        gate[h],
+        gatePrime[h]
+    );
 
     lambdaEff[h] =
-        lambdaHigh * std::exp(-logLambdaRatio * gate[h]);
+        lambdaHigh *
+        std::exp(-logLambdaRatio * gate[h]);
 
     kappa[h] =
-        logLambdaRatio * lambdaEff[h] * gatePrime[h];
+        logLambdaRatio *
+        lambdaEff[h] *
+        gatePrime[h];
 
     detectorNorm[h] = -detectorNorm[h];
   }
 
-  // Restore the signs in case detectorNorm is inspected below.
-  for (unsigned i = 0; i < nAtoms; ++i) {
+  /*
+   * Restore the signs after using detectorNorm as a visited marker.
+   */
+  for(unsigned i = 0; i < nAtoms; ++i) {
     detectorNorm[i] = std::fabs(detectorNorm[i]);
   }
 
@@ -572,22 +693,27 @@ void VoronoiD1Adaptive::calculate() {
   // PASS 3: adaptive weights w_ih
   //====================================================================
 
-  for (unsigned i = 0; i < nn; ++i) {
+  for(unsigned i = 0; i < nn; ++i) {
     const unsigned h = pairH[i];
 
-    const double shiftedR = pairR[i] - minR[h];
-    const double value = std::exp(-lambdaEff[h] * shiftedR);
+    const double shiftedR =
+        pairR[i] - minR[h];
+
+    const double value =
+        std::exp(-lambdaEff[h] * shiftedR);
 
     w[i] = value;
     adaptiveNorm[h] += value;
   }
 
-  for (unsigned i = 0; i < nn; ++i) {
+  for(unsigned i = 0; i < nn; ++i) {
     const unsigned o = pairO[i];
     const unsigned h = pairH[i];
 
-    if (adaptiveNorm[h] <= 0.0) {
-      error("Zero adaptive Voronoi normalization encountered");
+    if(adaptiveNorm[h] <= 0.0) {
+      error(
+          "Zero adaptive Voronoi normalization encountered"
+      );
     }
 
     w[i] /= adaptiveNorm[h];
@@ -610,15 +736,18 @@ void VoronoiD1Adaptive::calculate() {
   // original implementation.
   //====================================================================
 
-  for (int j = 0; j < numAtomsa; ++j) {
-    if (j == numAtomso) {
-      charge[j] -= d1;
-    } else if (j == numAtomso + 1) {
-      charge[j] -= d2;
-    } else if (j == numAtomso + 2) {
-      charge[j] -= d3;
+  for(int j = 0; j < numAtomsa; ++j) {
+    const std::size_t js =
+        static_cast<std::size_t>(j);
+
+    if(j == numAtomso) {
+      charge[js] -= d1;
+    } else if(j == numAtomso + 1) {
+      charge[js] -= d2;
+    } else if(j == numAtomso + 2) {
+      charge[js] -= d3;
     } else {
-      charge[j] -= d0;
+      charge[js] -= d0;
     }
   }
 
@@ -634,25 +763,40 @@ void VoronoiD1Adaptive::calculate() {
 
   double cv = 0.0;
 
-  for (int j = 0; j < numAtomso; ++j) {
-    for (int k = j + 1; k < numAtomso; ++k) {
+  for(int j = 0; j < numAtomso; ++j) {
+    for(int k = j + 1; k < numAtomso; ++k) {
+      const unsigned ju = static_cast<unsigned>(j);
+      const unsigned ku = static_cast<unsigned>(k);
+
+      const std::size_t js =
+          static_cast<std::size_t>(j);
+
+      const std::size_t ks =
+          static_cast<std::size_t>(k);
+
       Vector rjk;
 
-      if (pbc) {
-        rjk = pbcDistance(getPosition(j), getPosition(k));
+      if(pbc) {
+        rjk = pbcDistance(
+            getPosition(ju),
+            getPosition(ku)
+        );
       } else {
-        rjk = delta(getPosition(j), getPosition(k));
+        rjk = delta(
+            getPosition(ju),
+            getPosition(ku)
+        );
       }
 
       const double r = rjk.modulo();
-      const double qprod = charge[j] * charge[k];
+      const double qprod = charge[js] * charge[ks];
 
       cv -= qprod * r;
 
-      A[j] += charge[k] * r;
-      A[k] += charge[j] * r;
+      A[js] += charge[ks] * r;
+      A[ks] += charge[js] * r;
 
-      if (r > tinyR) {
+      if(r > tinyR) {
         /*
          * rjk = R_k - R_j.
          *
@@ -662,8 +806,8 @@ void VoronoiD1Adaptive::calculate() {
          */
         const Vector dd = (qprod / r) * rjk;
 
-        deriv[j] += dd;
-        deriv[k] -= dd;
+        deriv[ju] += dd;
+        deriv[ku] -= dd;
 
         virial += Tensor(rjk, dd);
       }
@@ -679,7 +823,7 @@ void VoronoiD1Adaptive::calculate() {
   //       = sum_i A_i w_ih r_ih - rbar_h*Abar_h
   //====================================================================
 
-  for (unsigned i = 0; i < nn; ++i) {
+  for(unsigned i = 0; i < nn; ++i) {
     const unsigned o = pairO[i];
     const unsigned h = pairH[i];
 
@@ -688,13 +832,13 @@ void VoronoiD1Adaptive::calculate() {
   }
 
   /*
-   * Process each hydrogen once. adaptiveNorm is temporarily used as a
-   * visited marker.
+   * Process each GROUPB atom once. adaptiveNorm is temporarily used as
+   * a visited marker.
    */
-  for (unsigned i = 0; i < nn; ++i) {
+  for(unsigned i = 0; i < nn; ++i) {
     const unsigned h = pairH[i];
 
-    if (adaptiveNorm[h] < 0.0) {
+    if(adaptiveNorm[h] < 0.0) {
       continue;
     }
 
@@ -702,7 +846,10 @@ void VoronoiD1Adaptive::calculate() {
     adaptiveNorm[h] = -adaptiveNorm[h];
   }
 
-  for (unsigned i = 0; i < nAtoms; ++i) {
+  /*
+   * Restore the signs after using adaptiveNorm as a visited marker.
+   */
+  for(unsigned i = 0; i < nAtoms; ++i) {
     adaptiveNorm[i] = std::fabs(adaptiveNorm[i]);
   }
 
@@ -721,26 +868,33 @@ void VoronoiD1Adaptive::calculate() {
   // Gate correction:
   //
   //   dS/dR_O |_gate =
-  //       -2*lambda_det*kappa_h*C_h
+  //       -2*lambdaDet*kappa_h*C_h
   //       *u_oh*(u_oh-P_h)*e_oh
   //
   // The hydrogen derivative is the negative sum of the corresponding
   // oxygen derivatives, so each contribution is accumulated pairwise.
   //====================================================================
 
-  for (unsigned i = 0; i < nn; ++i) {
+  for(unsigned i = 0; i < nn; ++i) {
     const unsigned o = pairO[i];
     const unsigned h = pairH[i];
 
     const double baseCoefficient =
-        lambdaEff[h] * w[i] * (A[o] - abar[h]);
+        lambdaEff[h] *
+        w[i] *
+        (A[o] - abar[h]);
 
     const double gateCoefficient =
-        -2.0 * lambdaDet * kappa[h] * cad[h] *
-        u[i] * (u[i] - purity[h]);
+        -2.0 *
+        lambdaDet *
+        kappa[h] *
+        cad[h] *
+        u[i] *
+        (u[i] - purity[h]);
 
     const Vector dd =
-        (baseCoefficient + gateCoefficient) * pairEOH[i];
+        (baseCoefficient + gateCoefficient) *
+        pairEOH[i];
 
     deriv[o] += dd;
     deriv[h] -= dd;
@@ -752,7 +906,7 @@ void VoronoiD1Adaptive::calculate() {
     virial += Tensor(pairRvec[i], dd);
   }
 
-  for (unsigned i = 0; i < nAtoms; ++i) {
+  for(unsigned i = 0; i < nAtoms; ++i) {
     setAtomsDerivatives(i, deriv[i]);
   }
 
