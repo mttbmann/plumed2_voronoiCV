@@ -19,296 +19,630 @@
    You should have received a copy of the GNU Lesser General Public License
    along with plumed.  If not, see <http://www.gnu.org/licenses/>.
 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ */
-#include "tools/NeighborList.h"
-#include "tools/Communicator.h"
-#include "tools/OpenMP.h"
-#include "Colvar.h"
 
-#include "tools/Matrix.h"
+#include "Colvar.h"
 #include "core/ActionRegister.h"
-#include <string>
+#include "tools/NeighborList.h"
+#include "tools/OpenMP.h"
+
+#include <algorithm>
 #include <cmath>
-#include <iostream>
-using namespace std;
+#include <cstddef>
+#include <memory>
+#include <vector>
 
 namespace PLMD {
 namespace colvar {
 
 class VoronoiC1 : public Colvar {
+private:
   bool pbc;
   bool serial;
+
   std::unique_ptr<NeighborList> nl;
-  std::vector<PLMD::AtomNumber> list_a,list_b,list_c;
-  std::vector<PLMD::AtomNumber> atomsToRequest;
+
   bool invalidateList;
   bool firsttime;
+
   double lambda;
-  int nrx, num_atomsa,num_atomsb,num_atoms,num_atomso;
-  double d0, d1, d2, d3;
+
+  int nrx;
+  int num_atomsa;
+  int num_atomso;
+
+  double d0;
+  double d1;
+  double d2;
+  double d3;
 
 public:
   explicit VoronoiC1(const ActionOptions&);
   ~VoronoiC1();
-// active methods:
+
   void calculate() override;
   void prepare() override;
-  static void registerKeywords( Keywords& keys );
+
+  static void registerKeywords(Keywords& keys);
 };
 
-PLUMED_REGISTER_ACTION(VoronoiC1,"VORONOIC1")
+PLUMED_REGISTER_ACTION(VoronoiC1, "VORONOIC1")
 
-void VoronoiC1::registerKeywords( Keywords& keys ) {
+
+void VoronoiC1::registerKeywords(Keywords& keys) {
   Colvar::registerKeywords(keys);
-  keys.addFlag("SERIAL",false,"Perform the calculation in serial - for debug purpose");
-  keys.addFlag("PAIR",false,"Pair only 1st element of the 1st group with 1st element in the second, etc");
-  keys.addFlag("NLIST",false,"Use a neighbor list to speed up the calculation");
-  keys.add("optional","NL_CUTOFF","The cutoff for the neighbor list");
-  keys.add("optional","NL_STRIDE","The frequency with which we are updating the atoms in the neighbor list");
-  keys.add("atoms","GROUPA","First list of atoms");
-  keys.add("atoms","GROUPB","Second list of atoms (if empty, N*(N-1)/2 pairs in GROUPA are counted)");
-  keys.add("compulsory","LAMBDA","1","The lambda parameter of the sum_exp function; 0 implies 1");  
-  keys.add("compulsory","D_0","0.0","The d_0 parameter of the switching function");
-  keys.add("compulsory","D_1","0.0","The d_1 parameter of the switching function");
-  keys.add("compulsory","D_2","0.0","The d_2 parameter of the switching function");
-  keys.add("compulsory","D_3","0.0","The d_3 parameter of the switching function");
-  keys.add("compulsory","NRX","0.0","The number of reactive sites");
-  keys.setValueDescription("the Voronoi collective variable: number of ions");
+
+  keys.addFlag(
+      "SERIAL",
+      false,
+      "Perform the calculation in serial - for debug purpose"
+  );
+
+  keys.addFlag(
+      "PAIR",
+      false,
+      "Pair only 1st element of the 1st group with 1st element in the "
+      "second, etc"
+  );
+
+  keys.addFlag(
+      "NLIST",
+      false,
+      "Use a neighbor list to speed up the calculation"
+  );
+
+  keys.add(
+      "optional",
+      "NL_CUTOFF",
+      "The cutoff for the neighbor list"
+  );
+
+  keys.add(
+      "optional",
+      "NL_STRIDE",
+      "The frequency with which we are updating the atoms in the "
+      "neighbor list"
+  );
+
+  keys.add(
+      "atoms",
+      "GROUPA",
+      "First list of atoms"
+  );
+
+  keys.add(
+      "atoms",
+      "GROUPB",
+      "Second list of atoms (if empty, N*(N-1)/2 pairs in GROUPA are "
+      "counted)"
+  );
+
+  keys.add(
+      "compulsory",
+      "LAMBDA",
+      "1",
+      "The lambda parameter of the sum_exp function; 0 implies 1"
+  );
+
+  keys.add(
+      "compulsory",
+      "D_0",
+      "0.0",
+      "The d_0 parameter of the switching function"
+  );
+
+  /*
+   * These keywords are retained for compatibility with the original
+   * action interface. The current VORONOIC1 calculation uses D_0 for
+   * the active GROUPA atoms.
+   */
+  keys.add(
+      "compulsory",
+      "D_1",
+      "0.0",
+      "The d_1 parameter of the switching function"
+  );
+
+  keys.add(
+      "compulsory",
+      "D_2",
+      "0.0",
+      "The d_2 parameter of the switching function"
+  );
+
+  keys.add(
+      "compulsory",
+      "D_3",
+      "0.0",
+      "The d_3 parameter of the switching function"
+  );
+
+  keys.add(
+      "compulsory",
+      "NRX",
+      "0.0",
+      "The number of reactive sites"
+  );
+
+  keys.setValueDescription(
+      "the Voronoi collective variable: number of ions"
+  );
 }
 
-VoronoiC1::VoronoiC1(const ActionOptions&ao):
+
+VoronoiC1::VoronoiC1(const ActionOptions& ao):
   PLUMED_COLVAR_INIT(ao),
   pbc(true),
   serial(false),
   invalidateList(true),
-  firsttime(true)
+  firsttime(true),
+  lambda(1.0),
+  nrx(0),
+  num_atomsa(0),
+  num_atomso(0),
+  d0(0.0),
+  d1(0.0),
+  d2(0.0),
+  d3(0.0)
 {
+  parseFlag("SERIAL", serial);
 
-  parseFlag("SERIAL",serial);
+  std::vector<AtomNumber> ga_lista;
+  std::vector<AtomNumber> gb_lista;
 
-  std::vector<AtomNumber> ga_lista,gb_lista;
-  parseAtomList("GROUPA",ga_lista);
-  parseAtomList("GROUPB",gb_lista);
+  parseAtomList("GROUPA", ga_lista);
+  parseAtomList("GROUPB", gb_lista);
 
-  list_a = ga_lista;
-  list_b = gb_lista;
-  
-  num_atomsa = list_a.size();
-  num_atomsb = list_b.size(); 
-  num_atoms = num_atomsa + num_atomsb;  
+  num_atomsa = static_cast<int>(ga_lista.size());
 
-  bool nopbc=!pbc;
-  parseFlag("NOPBC",nopbc);
-  pbc=!nopbc;  
-  
-  parse("D_0",d0);
-  parse("D_1",d1);
-  parse("D_2",d2);
-  parse("D_3",d3);
-  parse("NRX",nrx);
-  parse("LAMBDA",lambda);  
-  num_atomso = num_atomsa - nrx;  
+  bool nopbc = !pbc;
+  parseFlag("NOPBC", nopbc);
+  pbc = !nopbc;
 
-// pair stuff
-  bool dopair=false;
-  parseFlag("PAIR",dopair);
+  parse("D_0", d0);
+  parse("D_1", d1);
+  parse("D_2", d2);
+  parse("D_3", d3);
+  parse("NRX", nrx);
+  parse("LAMBDA", lambda);
 
-// neighbor list stuff
-  bool doneigh=false;
-  double nl_cut=0.0;
-  int nl_st=0;
-  parseFlag("NLIST",doneigh);
+  /*
+   * Preserve the original definition: the first
+   * size(GROUPA)-NRX atoms are active in the final charge sum.
+   */
+  num_atomso = num_atomsa - nrx;
+
+  // Pair handling.
+  bool dopair = false;
+  parseFlag("PAIR", dopair);
+
+  // Neighbor-list handling.
+  bool doneigh = false;
+  double nl_cut = 0.0;
+  int nl_st = 0;
+
+  parseFlag("NLIST", doneigh);
+
   if(doneigh) {
-    parse("NL_CUTOFF",nl_cut);
-    if(nl_cut<=0.0) error("NL_CUTOFF should be explicitly specified and positive");
-    parse("NL_STRIDE",nl_st);
-    if(nl_st<=0) error("NL_STRIDE should be explicitly specified and positive");
+    parse("NL_CUTOFF", nl_cut);
+
+    if(nl_cut <= 0.0) {
+      error("NL_CUTOFF should be explicitly specified and positive");
+    }
+
+    parse("NL_STRIDE", nl_st);
+
+    if(nl_st <= 0) {
+      error("NL_STRIDE should be explicitly specified and positive");
+    }
   }
 
-  addValueWithDerivatives(); setNotPeriodic();
-  if(gb_lista.size()>0) {
-    if(doneigh)  nl=Tools::make_unique<NeighborList>(ga_lista,gb_lista,serial,dopair,pbc,getPbc(),comm,nl_cut,nl_st);
-    else         nl=Tools::make_unique<NeighborList>(ga_lista,gb_lista,serial,dopair,pbc,getPbc(),comm);
+  addValueWithDerivatives();
+  setNotPeriodic();
+
+  if(!gb_lista.empty()) {
+    if(doneigh) {
+      nl = Tools::make_unique<NeighborList>(
+          ga_lista,
+          gb_lista,
+          serial,
+          dopair,
+          pbc,
+          getPbc(),
+          comm,
+          nl_cut,
+          nl_st
+      );
+    } else {
+      nl = Tools::make_unique<NeighborList>(
+          ga_lista,
+          gb_lista,
+          serial,
+          dopair,
+          pbc,
+          getPbc(),
+          comm
+      );
+    }
   } else {
-    if(doneigh)  nl=Tools::make_unique<NeighborList>(ga_lista,serial,pbc,getPbc(),comm,nl_cut,nl_st);
-    else         nl=Tools::make_unique<NeighborList>(ga_lista,serial,pbc,getPbc(),comm);
+    if(doneigh) {
+      nl = Tools::make_unique<NeighborList>(
+          ga_lista,
+          serial,
+          pbc,
+          getPbc(),
+          comm,
+          nl_cut,
+          nl_st
+      );
+    } else {
+      nl = Tools::make_unique<NeighborList>(
+          ga_lista,
+          serial,
+          pbc,
+          getPbc(),
+          comm
+      );
+    }
   }
 
-  requestAtoms(nl->getFullAtomList()); 
+  requestAtoms(nl->getFullAtomList());
 
-  log.printf("  between two groups of %u and %u atoms\n",static_cast<unsigned>(ga_lista.size()),static_cast<unsigned>(gb_lista.size()));
+  log.printf(
+      "  between two groups of %u and %u atoms\n",
+      static_cast<unsigned>(ga_lista.size()),
+      static_cast<unsigned>(gb_lista.size())
+  );
+
   log.printf("  first group:\n");
-  for(unsigned int i=0; i<ga_lista.size(); ++i) {
-    if ( (i+1) % 25 == 0 ) log.printf("  \n");
+
+  for(std::size_t i = 0; i < ga_lista.size(); ++i) {
+    if((i + 1) % 25 == 0) {
+      log.printf("  \n");
+    }
+
     log.printf("  %d", ga_lista[i].serial());
   }
+
   log.printf("  \n  second group:\n");
-  for(unsigned int i=0; i<gb_lista.size(); ++i) {
-    if ( (i+1) % 25 == 0 ) log.printf("  \n");
+
+  for(std::size_t i = 0; i < gb_lista.size(); ++i) {
+    if((i + 1) % 25 == 0) {
+      log.printf("  \n");
+    }
+
     log.printf("  %d", gb_lista[i].serial());
   }
+
   log.printf("  \n");
-  if(pbc) log.printf("  using periodic boundary conditions\n");
-  else    log.printf("  without periodic boundary conditions\n");
-  if(dopair) log.printf("  with PAIR option\n");
+
+  if(pbc) {
+    log.printf("  using periodic boundary conditions\n");
+  } else {
+    log.printf("  without periodic boundary conditions\n");
+  }
+
+  if(dopair) {
+    log.printf("  with PAIR option\n");
+  }
+
   if(doneigh) {
     log.printf("  using neighbor lists with\n");
-    log.printf("  update every %d steps and cutoff %f\n",nl_st,nl_cut);
+    log.printf(
+        "  update every %d steps and cutoff %f\n",
+        nl_st,
+        nl_cut
+    );
   }
 }
+
 
 VoronoiC1::~VoronoiC1() {
-// destructor required to delete forward declared class
+  // Destructor retained for ownership of the NeighborList.
 }
 
+
 void VoronoiC1::prepare() {
-  if(nl->getStride()>0) {
-    if(firsttime || (getStep()%nl->getStride()==0)) {
-      requestAtoms(nl->getFullAtomList()); 
-      invalidateList=true;
-      firsttime=false;
+  if(nl->getStride() > 0) {
+    if(firsttime || getStep() % nl->getStride() == 0) {
+      requestAtoms(nl->getFullAtomList());
+
+      invalidateList = true;
+      firsttime = false;
     } else {
-      requestAtoms(nl->getFullAtomList());      
-      invalidateList=false;
-      if(getExchangeStep()) error("Neighbor lists should be updated on exchange steps - choose a NL_STRIDE which divides the exchange stride!");
+      /*
+       * Preserve the original behavior: always request the full list so
+       * that the local atom ordering remains fixed.
+       */
+      requestAtoms(nl->getFullAtomList());
+
+      invalidateList = false;
+
+      if(getExchangeStep()) {
+        error(
+            "Neighbor lists should be updated on exchange steps - choose "
+            "a NL_STRIDE which divides the exchange stride!"
+        );
+      }
     }
-    if(getExchangeStep()) firsttime=true;
+
+    if(getExchangeStep()) {
+      firsttime = true;
+    }
   }
 }
 
-// calculator
-void VoronoiC1::calculate()
-{
 
-  double totcharge=0.0;
-  
+void VoronoiC1::calculate() {
+  double totcharge = 0.0;
+
   Tensor virial;
-  vector<Vector> deriv(getNumberOfAtoms());
+  virial.zero();
+
+  std::vector<Vector> deriv(getNumberOfAtoms());
+
   Vector zeros;
   zeros.zero();
-  fill(deriv.begin(), deriv.end(), zeros);
 
-  if(nl->getStride()>0 && invalidateList) {
+  std::fill(deriv.begin(), deriv.end(), zeros);
+
+  if(nl->getStride() > 0 && invalidateList) {
     nl->update(getPositions());
   }
 
-  unsigned stride;
-  unsigned rank;
-  if(serial) {
-    stride=1;
-    rank=0;
-  } else {
-    stride=comm.Get_size();
-    rank=comm.Get_rank();
+  /*
+   * Preserve the original use of communicator size in the OpenMP
+   * thread-count heuristic. The loops themselves are not distributed
+   * over MPI ranks.
+   */
+  const unsigned stride = serial
+                          ? 1u
+                          : static_cast<unsigned>(comm.Get_size());
+
+  unsigned nt = OpenMP::getNumThreads();
+
+  // Number of pairs in the NeighborList pair list.
+  const unsigned nn = nl->size();
+
+  if(nt * stride * 10u > nn) {
+    nt = 1;
   }
 
-  unsigned nt=OpenMP::getNumThreads();
-  const unsigned nn=nl->size(); 
-  if(nt*stride*10>nn) nt=1;
+  // Exponential weight for every GROUPA-GROUPB pair.
+  std::vector<double> nnexp(nn, 0.0);
 
-  vector<double> nnexp(nn);
-  vector<unsigned> nni0(nn);
-  vector<unsigned> nni1(nn);
-  vector<double> nnexpnorm(getNumberOfAtoms()); 
-  vector<vector<double>> c(getNumberOfAtoms(),vector<double>(getNumberOfAtoms()));  
-  vector<double> charge(num_atomsa); 
-  vector<vector<Vector>> distAB(num_atomsa,vector<Vector>(getNumberOfAtoms())); 
-  vector<vector<double>> distABinvmod(num_atomsa,vector<double>(getNumberOfAtoms())); 
-  
-  // --- precomputed quantities to make LOOP4 O(nn) instead of O(nn*num_atomsa) ---
-  vector<double> A(num_atomsa, 0.0);          // A(m) = shifted charge(m) for relevant atoms, 0 otherwise
-  vector<double> abar(getNumberOfAtoms(), 0.0); // abar(h) = sum_o c[o][h]*A[o]
+  // Local atom indices for every pair.
+  std::vector<unsigned> nni0(nn, 0u);
+  std::vector<unsigned> nni1(nn, 0u);
 
-  #pragma omp parallel num_threads(nt)
+  // Normalization for each local GROUPB atom.
+  std::vector<double> nnexpnorm(
+      getNumberOfAtoms(),
+      0.0
+  );
+
+  // Normalized Voronoi weights c[o][h].
+  std::vector<std::vector<double>> c(
+      getNumberOfAtoms(),
+      std::vector<double>(getNumberOfAtoms(), 0.0)
+  );
+
+  // Voronoi-assigned charge on each GROUPA atom.
+  std::vector<double> charge(
+      static_cast<std::size_t>(num_atomsa),
+      0.0
+  );
+
+  // GROUPA-GROUPB displacement vectors.
+  std::vector<std::vector<Vector>> distAB(
+      static_cast<std::size_t>(num_atomsa),
+      std::vector<Vector>(getNumberOfAtoms())
+  );
+
+  // Inverse GROUPA-GROUPB distances.
+  std::vector<std::vector<double>> distABinvmod(
+      static_cast<std::size_t>(num_atomsa),
+      std::vector<double>(getNumberOfAtoms(), 0.0)
+  );
+
+  /*
+   * A(m) is the shifted charge for active GROUPA atoms and zero for
+   * inactive/reactive GROUPA atoms.
+   *
+   * abar(h) = sum_o c[o][h] A[o].
+   */
+  std::vector<double> A(
+      static_cast<std::size_t>(num_atomsa),
+      0.0
+  );
+
+  std::vector<double> abar(
+      getNumberOfAtoms(),
+      0.0
+  );
+
+#pragma omp parallel num_threads(nt)
   {
-    std::vector<Vector> omp_deriv(getPositions().size());  
-    Tensor omp_virial;                                      
-    vector<double> charget(num_atomsa); 
-    vector<double> nnexpnormt(getNumberOfAtoms());
+    /*
+     * Thread-local derivative and virial accumulators.
+     */
+    std::vector<Vector> omp_deriv(getPositions().size());
+    std::fill(omp_deriv.begin(), omp_deriv.end(), zeros);
 
-    //LOOP1 compute the distances, the exponentials and the normalizations over groupb elements
-    #pragma omp for
-    for(unsigned int i=0; i<nn; i+=1) {
+    Tensor omp_virial;
+    omp_virial.zero();
 
-        unsigned i0=nl->getClosePair(i).first;  
-        unsigned i1=nl->getClosePair(i).second;
+    std::vector<double> charget(
+        static_cast<std::size_t>(num_atomsa),
+        0.0
+    );
 
-        if(pbc) {
-          distAB[i0][i1]=pbcDistance(getPosition(i0),getPosition(i1));
-        } else {
-          distAB[i0][i1]=delta(getPosition(i0),getPosition(i1));
-        }
+    std::vector<double> nnexpnormt(
+        getNumberOfAtoms(),
+        0.0
+    );
 
-        distABinvmod[i0][i1]=1.0/distAB[i0][i1].modulo();
-        nnexp[i]=exp(lambda * distAB[i0][i1].modulo());
-        nni0[i]=i0;  
-        nni1[i]=i1;
-        nnexpnormt[i1]+=nnexp[i]; 
+    /*
+     * LOOP1:
+     * Compute GROUPA-GROUPB displacements, exponential weights, and
+     * normalization denominators.
+     */
+#pragma omp for
+    for(unsigned i = 0; i < nn; ++i) {
+      const unsigned i0 = nl->getClosePair(i).first;
+      const unsigned i1 = nl->getClosePair(i).second;
+
+      if(pbc) {
+        distAB[i0][i1] = pbcDistance(
+            getPosition(i0),
+            getPosition(i1)
+        );
+      } else {
+        distAB[i0][i1] = delta(
+            getPosition(i0),
+            getPosition(i1)
+        );
+      }
+
+      const double distance = distAB[i0][i1].modulo();
+
+      distABinvmod[i0][i1] = 1.0 / distance;
+      nnexp[i] = std::exp(lambda * distance);
+
+      nni0[i] = i0;
+      nni1[i] = i1;
+
+      nnexpnormt[i1] += nnexp[i];
     }
-    #pragma omp critical
-    for(unsigned i=0; i<getNumberOfAtoms(); i++) nnexpnorm[i]+=nnexpnormt[i];
-    #pragma omp barrier
 
-    //LOOP2 compute the unshifted charge on atoms A
-    #pragma omp for
-    for(unsigned int i=0; i<nn; i+=1) {
-      c[nni0[i]][nni1[i]]=nnexp[i]/nnexpnorm[nni1[i]];  
-      charget[nni0[i]]+=c[nni0[i]][nni1[i]];
+#pragma omp critical
+    {
+      for(std::size_t i = 0; i < getNumberOfAtoms(); ++i) {
+        nnexpnorm[i] += nnexpnormt[i];
+      }
     }
-    #pragma omp critical
-    for(unsigned i=0; i<num_atomsa; i++) charge[i]+=charget[i];
-    #pragma omp barrier
 
-    //LOOP2.5 shift charge by d0, accumulate total charge, populate vector A
-    #pragma omp for reduction(+:totcharge)
-    for(unsigned int j=0; j<num_atomso; j+=1) {    
-      charge[j]-=d0;
-      totcharge+=pow(charge[j],2);
-      A[j] = charge[j]; // Only the active atoms contribute to the analytical gradient scalar A
-    }    
+#pragma omp barrier
 
-    // --- LOOP4 O(nn) optimization pass ---
-    
-    // Pass 1: build abar(h) = sum_o c[o][h] * A[o]
-    vector<double> abart(getNumberOfAtoms(), 0.0); // thread-local version of abar
-    #pragma omp for
-    for(unsigned int i=0; i<nn; i+=1) {
-      unsigned ind0=nni0[i];
-      unsigned ind1=nni1[i];
+    /*
+     * LOOP2:
+     * Compute normalized Voronoi weights and unshifted GROUPA charges.
+     */
+#pragma omp for
+    for(unsigned i = 0; i < nn; ++i) {
+      c[nni0[i]][nni1[i]] =
+          nnexp[i] / nnexpnorm[nni1[i]];
+
+      charget[nni0[i]] += c[nni0[i]][nni1[i]];
+    }
+
+#pragma omp critical
+    {
+      for(int i = 0; i < num_atomsa; ++i) {
+        const std::size_t is = static_cast<std::size_t>(i);
+        charge[is] += charget[is];
+      }
+    }
+
+#pragma omp barrier
+
+    /*
+     * LOOP2.5:
+     * Shift active GROUPA charges by D_0, calculate the squared-charge
+     * CV, and populate A.
+     *
+     * This preserves the original definition:
+     *
+     *     totcharge = sum_{j < num_atomso} (charge[j] - d0)^2
+     */
+#pragma omp for reduction(+:totcharge)
+    for(int j = 0; j < num_atomso; ++j) {
+      const std::size_t js = static_cast<std::size_t>(j);
+
+      charge[js] -= d0;
+      totcharge += std::pow(charge[js], 2);
+      A[js] = charge[js];
+    }
+
+    /*
+     * LOOP4, pass 1:
+     *
+     *     abar(h) = sum_o c[o][h] A[o]
+     */
+    std::vector<double> abart(
+        getNumberOfAtoms(),
+        0.0
+    );
+
+#pragma omp for
+    for(unsigned i = 0; i < nn; ++i) {
+      const unsigned ind0 = nni0[i];
+      const unsigned ind1 = nni1[i];
+
       abart[ind1] += c[ind0][ind1] * A[ind0];
     }
-    #pragma omp critical
-    for(unsigned i=0; i<getNumberOfAtoms(); i++) abar[i]+=abart[i];
-    #pragma omp barrier
 
-    // Pass 2: compute forces using A(k) - abar(h)
-    #pragma omp for
-    for(unsigned int i=0; i<nn; i+=1) {
-      unsigned k=nni0[i];
-      unsigned h=nni1[i];
-
-      // Note: Reversing sign ensures compatibility with D1's correct virial PLUMED convention
-      double buf = -2.0 * lambda * c[k][h] * ( A[k] - abar[h] );
-	
-      Vector dd(buf*distABinvmod[k][h]*distAB[k][h]);
-      
-      omp_deriv[k]+=dd;
-      omp_deriv[h]-=dd;
-      omp_virial += Tensor(distAB[k][h],dd); // Add proper thread-local virial tensor
-    }
-
-    #pragma omp critical
+#pragma omp critical
     {
-      for(unsigned i=0; i<getPositions().size(); i++) deriv[i]+=omp_deriv[i];
-      virial += omp_virial; // Merge thread-local virial into the global one
+      for(std::size_t i = 0; i < getNumberOfAtoms(); ++i) {
+        abar[i] += abart[i];
+      }
     }
-    #pragma omp barrier
 
+#pragma omp barrier
+
+    /*
+     * LOOP4, pass 2:
+     * Compute the analytical derivatives using A(k)-abar(h).
+     *
+     * The minus sign is retained exactly from the original implementation:
+     *
+     *     buf = -2 lambda c[k][h] (A[k] - abar[h])
+     */
+#pragma omp for
+    for(unsigned i = 0; i < nn; ++i) {
+      const unsigned k = nni0[i];
+      const unsigned h = nni1[i];
+
+      const double buf =
+          -2.0
+          * lambda
+          * c[k][h]
+          * (A[k] - abar[h]);
+
+      const Vector dd(
+          buf
+          * distABinvmod[k][h]
+          * distAB[k][h]
+      );
+
+      omp_deriv[k] += dd;
+      omp_deriv[h] -= dd;
+
+      /*
+       * Preserve the original virial convention.
+       */
+      omp_virial += Tensor(distAB[k][h], dd);
+    }
+
+#pragma omp critical
+    {
+      for(std::size_t i = 0; i < getPositions().size(); ++i) {
+        deriv[i] += omp_deriv[i];
+      }
+
+      virial += omp_virial;
+    }
+
+#pragma omp barrier
   }
 
-  for(unsigned i=0; i<deriv.size(); ++i) setAtomsDerivatives(i,deriv[i]);
-  setValue           (totcharge);
-  setBoxDerivatives  (virial);
+  for(std::size_t i = 0; i < deriv.size(); ++i) {
+    setAtomsDerivatives(i, deriv[i]);
+  }
 
+  setValue(totcharge);
+  setBoxDerivatives(virial);
 }
-}
-}
+
+} // namespace colvar
+} // namespace PLMD
