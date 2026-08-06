@@ -154,6 +154,9 @@ void VoronoiD1Adaptive::registerKeywords(Keywords& keys) {
       "compulsory", "NRX", "0",
       "Number of reactive/non-water sites at the end of GROUPA. Only the "
       "first size(GROUPA)-NRX sites enter the pair-distance sum.");
+   
+  keys.setValueDescription("scalar",
+      "the adaptive Voronoi collective variable (charge-weighted pair-distance sum)");
 }
 
 
