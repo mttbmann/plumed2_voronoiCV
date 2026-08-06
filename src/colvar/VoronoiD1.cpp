@@ -72,6 +72,7 @@ void VoronoiD1::registerKeywords( Keywords& keys ) {
   keys.add("compulsory","D_2","0.0","The d_2 parameter of the switching function");
   keys.add("compulsory","D_3","0.0","The d_3 parameter of the switching function");
   keys.add("compulsory","NRX","0.0","The number of reactive sites");
+  keys.setValueDescription("scalar","the Voronoi collective variable (charge-weighted pair-distance sum)");
   //keys.add("compulsory","NN_THETA","1.0","The number of reactive sites");
 }
 
