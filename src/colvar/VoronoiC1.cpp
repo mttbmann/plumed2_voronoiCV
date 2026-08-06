@@ -72,7 +72,7 @@ void VoronoiC1::registerKeywords( Keywords& keys ) {
   keys.add("compulsory","D_2","0.0","The d_2 parameter of the switching function");
   keys.add("compulsory","D_3","0.0","The d_3 parameter of the switching function");
   keys.add("compulsory","NRX","0.0","The number of reactive sites");
-  keys.setValueDescription("scalar","the Voronoi collective variable: number of ions");
+  keys.setValueDescription("the Voronoi collective variable: number of ions");
 }
 
 VoronoiC1::VoronoiC1(const ActionOptions&ao):
