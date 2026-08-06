@@ -22,6 +22,7 @@
 
 #include "Colvar.h"
 #include "core/ActionRegister.h"
+#include "tools/Communicator.h"
 #include "tools/NeighborList.h"
 #include "tools/OpenMP.h"
 
